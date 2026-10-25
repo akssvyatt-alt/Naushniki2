@@ -212,4 +212,194 @@ class MainActivity : Activity() {
             interpolator = DecelerateInterpolator()
             start()
         }
-        handler.postDelayed({ finish()
+        handler.postDelayed({ finish() }, 300)
+    }
+}
+
+class HeadphoneAnimationView(context: Context) : View(context) {
+
+    private var phase = 0f
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val headbandRect = RectF()
+    private val leftCupRect = RectF()
+    private val rightCupRect = RectF()
+
+    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 2000
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = null
+        addUpdateListener {
+            phase = it.animatedValue as Float
+            invalidate()
+        }
+    }
+
+    fun startPulse() {
+        if (!animator.isStarted) animator.start()
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        animator.cancel()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val cx = width / 2f
+        val cy = height / 2f
+        val maxRadius = width * 0.45f
+
+        for (i in 0..2) {
+            val waveProgress = (phase + i / 3f) % 1f
+            val radius = maxRadius * 0.35f + (maxRadius * 0.65f * waveProgress)
+            val alpha = ((1f - waveProgress) * 160).toInt().coerceIn(0, 255)
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 6f * (1f - waveProgress * 0.5f)
+            paint.color = Color.argb(alpha, 0, 229, 255)
+            canvas.drawCircle(cx, cy, radius, paint)
+        }
+
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#2200E5FF")
+        canvas.drawCircle(cx, cy, maxRadius * 0.42f, paint)
+
+        val offsetY = sin(phase * Math.PI * 2).toFloat() * 10f
+        canvas.save()
+        canvas.translate(0f, offsetY)
+
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 16f
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = Color.WHITE
+        val arcSize = maxRadius * 0.28f
+        headbandRect.set(cx - arcSize, cy - arcSize, cx + arcSize, cy + arcSize)
+        canvas.drawArc(headbandRect, 180f, 180f, false, paint)
+
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#00E5FF")
+        val cupW = 26f
+        val cupH = 54f
+        leftCupRect.set(cx - arcSize - cupW / 2, cy - 10f, cx - arcSize + cupW / 2, cy + cupH)
+        rightCupRect.set(cx + arcSize - cupW / 2, cy - 10f, cx + arcSize + cupW / 2, cy + cupH)
+        canvas.drawRoundRect(leftCupRect, 14f, 14f, paint)
+        canvas.drawRoundRect(rightCupRect, 14f, 14f, paint)
+
+        canvas.restore()
+    }
+}
+
+class HeadphoneService : Service() {
+
+    private lateinit var audioManager: AudioManager
+    private var isReady = false
+
+    private val audioCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            if (!isReady || addedDevices == null) return
+
+            for (device in addedDevices) {
+                if (!device.isSink) continue
+
+                val isWired = device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                val isUsb = device.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                        device.type == AudioDeviceInfo.TYPE_USB_DEVICE
+                val isBluetooth = device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        device.type == 26 // TYPE_BLE_HEADSET
+
+                if (!isWired && !isUsb && !isBluetooth) continue
+
+                val typeDesc = when {
+                    isWired -> "Проводное подключение (3.5 мм)"
+                    isUsb -> "Цифровой аудиовыход USB-C"
+                    else -> "Беспроводное подключение Bluetooth"
+                }
+
+                // Небольшая задержка (350 мс), чтобы Bluetooth-устройство успело передать свое реальное имя вместо кода телефона
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val cleanName = resolveDeviceName(device, isWired, isUsb)
+                    launchPopup(cleanName, typeDesc)
+                }, 350)
+
+                break
+            }
+        }
+    }
+
+    private fun resolveDeviceName(device: AudioDeviceInfo, isWired: Boolean, isUsb: Boolean): String {
+        // У обычных наушников 3.5 мм нет чипа с именем, система всегда возвращает код платы телефона (например, I2405)
+        if (isWired) return "Проводные наушники"
+
+        val rawName = device.productName?.toString()?.trim() ?: ""
+
+        // Фильтруем системное имя модели смартфона (Build.MODEL / Build.DEVICE) и заводские индексы вида I2405 / V2304
+        val isPhoneInternalCode = rawName.isBlank() ||
+                rawName.equals(Build.MODEL, ignoreCase = true) ||
+                rawName.equals(Build.DEVICE, ignoreCase = true) ||
+                rawName.equals(Build.PRODUCT, ignoreCase = true) ||
+                rawName.matches(Regex("^[IV]\\d{4}[A-Z]?$", RegexOption.IGNORE_CASE))
+
+        return if (isPhoneInternalCode) {
+            if (isUsb) "USB-C наушники" else "Bluetooth-наушники"
+        } else {
+            rawName
+        }
+    }
+
+    private fun launchPopup(name: String, type: String) {
+        val popupIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra("device_name", name)
+            putExtra("device_type", type)
+            putExtra("auto_triggered", true)
+        }
+        startActivity(popupIntent)
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundNotification()
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.registerAudioDeviceCallback(audioCallback, Handler(Looper.getMainLooper()))
+
+        Handler(Looper.getMainLooper()).postDelayed({ isReady = true }, 1000)
+    }
+
+    private fun startForegroundNotification() {
+        val channelId = "headphone_monitor_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Мониторинг наушников",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            Notification.Builder(this)
+        }
+            .setContentTitle("Headphone Popup активен")
+            .setContentText("Ожидание подключения наушников...")
+            .setSmallIcon(android.R.drawable.stat_sys_headset)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(1, notification)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        audioManager.unregisterAudioDeviceCallback(audioCallback)
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
