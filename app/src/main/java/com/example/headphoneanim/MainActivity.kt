@@ -1,11 +1,19 @@
 package com.example.headphoneanim
 
+import android.annotation.SuppressLint
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.*
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
@@ -40,8 +48,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Запрашиваем разрешение на уведомления и чтение имени Bluetooth-устройств
+        val permissionsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 101)
+            permissionsToRequest.add("android.permission.POST_NOTIFICATIONS")
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            permissionsToRequest.add("android.permission.BLUETOOTH_CONNECT")
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            requestPermissions(permissionsToRequest.toTypedArray(), 101)
         }
 
         val serviceIntent = Intent(this, HeadphoneService::class.java)
@@ -87,7 +103,7 @@ class MainActivity : Activity() {
         cardContainer.addView(waveView, waveParams)
 
         titleText = TextView(this).apply {
-            text = "Наушники подключены"
+            text = "Мониторинг наушников"
             textSize = 20f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
@@ -97,7 +113,7 @@ class MainActivity : Activity() {
         cardContainer.addView(titleText)
 
         subtitleText = TextView(this).apply {
-            text = "Фоновый мониторинг активен"
+            text = "Сервис готов к работе"
             textSize = 14f
             setTextColor(Color.parseColor("#9E9EBA"))
             gravity = Gravity.CENTER
@@ -118,8 +134,7 @@ class MainActivity : Activity() {
                 setColor(Color.parseColor("#00E5FF"))
             }
             setOnClickListener {
-                // При нажатии на тест имитируем реальное подключение (скрываем кнопку и закрываем через 4 сек)
-                playConnectAnimation("TWS Наушники", "Аудиовыход готов к работе", true)
+                playConnectAnimation("Тестовые наушники", "Проверка всплывающего окна", true)
             }
         }
         cardContainer.addView(testBtn, btnParams)
@@ -169,7 +184,6 @@ class MainActivity : Activity() {
         titleText.text = name
         subtitleText.text = type
 
-        // Если окно вызвано подключением наушников — прячем все кнопки
         if (autoClose) {
             testBtn.visibility = View.GONE
             overlayBtn?.visibility = View.GONE
@@ -292,7 +306,29 @@ class HeadphoneAnimationView(context: Context) : View(context) {
 class HeadphoneService : Service() {
 
     private lateinit var audioManager: AudioManager
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var isReady = false
+    private var lastTriggerTime = 0L
+    private var lastConnectedBtName: String? = null
+
+    // Слушатель прямых событий подключения Bluetooth, который ловит оригинальное имя наушников
+    private val btReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+            }
+            if (device != null && hasBtPermission()) {
+                val name = device.alias ?: device.name
+                if (!name.isNullOrBlank() && !isSystemBoardName(name)) {
+                    lastConnectedBtName = name
+                }
+            }
+        }
+    }
 
     private val audioCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -307,45 +343,108 @@ class HeadphoneService : Service() {
                         device.type == AudioDeviceInfo.TYPE_USB_DEVICE
                 val isBluetooth = device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                         device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                        device.type == 26 // TYPE_BLE_HEADSET
+                        device.type == 26 || device.type == 27
 
                 if (!isWired && !isUsb && !isBluetooth) continue
 
+                // Защита от двойного срабатывания (когда одновременно подключаются SCO и A2DP каналы)
+                val now = System.currentTimeMillis()
+                if (now - lastTriggerTime < 2500L) return
+                lastTriggerTime = now
+
                 val typeDesc = when {
-                    isWired -> "Проводное подключение (3.5 мм)"
-                    isUsb -> "Цифровой аудиовыход USB-C"
-                    else -> "Беспроводное подключение Bluetooth"
+                    isWired -> "Проводные наушники (3.5 мм)"
+                    isUsb -> "USB-C аудиоустройство"
+                    else -> "Bluetooth подключен"
                 }
 
-                // Небольшая задержка (350 мс), чтобы Bluetooth-устройство успело передать свое реальное имя вместо кода телефона
-                Handler(Looper.getMainLooper()).postDelayed({
-                    val cleanName = resolveDeviceName(device, isWired, isUsb)
-                    launchPopup(cleanName, typeDesc)
-                }, 350)
+                // Ждем 500 мс, чтобы профиль A2DP окончательно инициализировал настоящее имя модели
+                mainHandler.postDelayed({
+                    findRealHeadphoneName(isWired, isUsb) { realName ->
+                        launchPopup(realName, typeDesc)
+                    }
+                }, 500)
 
                 break
             }
         }
     }
 
-    private fun resolveDeviceName(device: AudioDeviceInfo, isWired: Boolean, isUsb: Boolean): String {
-        // У обычных наушников 3.5 мм нет чипа с именем, система всегда возвращает код платы телефона (например, I2405)
-        if (isWired) return "Проводные наушники"
+    private fun isSystemBoardName(name: String): Boolean {
+        val trimmed = name.trim()
+        return trimmed.isEmpty() ||
+                trimmed.equals(Build.MODEL, ignoreCase = true) ||
+                trimmed.equals(Build.DEVICE, ignoreCase = true) ||
+                trimmed.equals(Build.PRODUCT, ignoreCase = true) ||
+                trimmed.equals("I2405", ignoreCase = true) ||
+                trimmed.matches(Regex("^[IV]\\d{4}[A-Z]?$", RegexOption.IGNORE_CASE))
+    }
 
-        val rawName = device.productName?.toString()?.trim() ?: ""
-
-        // Фильтруем системное имя модели смартфона (Build.MODEL / Build.DEVICE) и заводские индексы вида I2405 / V2304
-        val isPhoneInternalCode = rawName.isBlank() ||
-                rawName.equals(Build.MODEL, ignoreCase = true) ||
-                rawName.equals(Build.DEVICE, ignoreCase = true) ||
-                rawName.equals(Build.PRODUCT, ignoreCase = true) ||
-                rawName.matches(Regex("^[IV]\\d{4}[A-Z]?$", RegexOption.IGNORE_CASE))
-
-        return if (isPhoneInternalCode) {
-            if (isUsb) "USB-C наушники" else "Bluetooth-наушники"
+    private fun hasBtPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED
         } else {
-            rawName
+            true
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun findRealHeadphoneName(isWired: Boolean, isUsb: Boolean, callback: (String) -> Unit) {
+        // 1. Сканируем все активные выходные аудиоустройства и ищем то, где имя НЕ равно I2405
+        val allOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        for (dev in allOutputs) {
+            val validType = dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    dev.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                    dev.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    dev.type == 26 || dev.type == 27
+            if (validType) {
+                val candidate = dev.productName?.toString()?.trim() ?: ""
+                if (!isSystemBoardName(candidate)) {
+                    callback(candidate)
+                    return
+                }
+            }
+        }
+
+        // 2. Если это Bluetooth и AudioManager все равно отдал I2405, берем имя из последнего события BluetoothDevice
+        if (!isWired && !isUsb) {
+            if (!lastConnectedBtName.isNullOrBlank()) {
+                callback(lastConnectedBtName!!)
+                return
+            }
+
+            // 3. Опрашиваем напрямую системный профиль Bluetooth A2DP
+            if (hasBtPermission()) {
+                val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                val adapter = btManager?.adapter
+                if (adapter != null && adapter.isEnabled) {
+                    adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+                        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                            val connected = proxy.connectedDevices
+                            val btName = connected.firstOrNull()?.let { it.alias ?: it.name }
+                            adapter.closeProfileProxy(profile, proxy)
+
+                            if (!btName.isNullOrBlank() && !isSystemBoardName(btName)) {
+                                callback(btName)
+                            } else {
+                                callback("Беспроводные наушники")
+                            }
+                        }
+
+                        override fun onServiceDisconnected(profile: Int) {}
+                    }, BluetoothProfile.A2DP)
+                    return
+                }
+            }
+        }
+
+        // 4. Резервный вариант для обычных аналоговых 3.5 мм наушников (у которых физически нет чипа с именем)
+        val fallback = when {
+            isWired -> "Проводные наушники"
+            isUsb -> "USB-C наушники"
+            else -> "Беспроводные наушники"
+        }
+        callback(fallback)
     }
 
     private fun launchPopup(name: String, type: String) {
@@ -362,9 +461,19 @@ class HeadphoneService : Service() {
         super.onCreate()
         startForegroundNotification()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.registerAudioDeviceCallback(audioCallback, Handler(Looper.getMainLooper()))
+        audioManager.registerAudioDeviceCallback(audioCallback, mainHandler)
 
-        Handler(Looper.getMainLooper()).postDelayed({ isReady = true }, 1000)
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(btReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(btReceiver, filter)
+        }
+
+        mainHandler.postDelayed({ isReady = true }, 1000)
     }
 
     private fun startForegroundNotification() {
@@ -399,6 +508,9 @@ class HeadphoneService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         audioManager.unregisterAudioDeviceCallback(audioCallback)
+        try {
+            unregisterReceiver(btReceiver)
+        } catch (_: Exception) {}
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
