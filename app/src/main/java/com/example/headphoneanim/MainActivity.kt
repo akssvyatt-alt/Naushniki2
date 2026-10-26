@@ -1,3 +1,18 @@
+Вот что произошло по каждому пункту и как это исправлено в коде ниже:
+
+1. **Светлая полоса сверху (где часы, скорость сети и батарея):** на скриншоте видно, что темный фон оверлея (`#4D000000`) обрезался ровно под статус-баром, потому что Android по умолчанию не пускает обычные окна в зону выреза камеры (Notch/Cutout). Чтобы избавиться от этой полосы, я убрал ручную покраску фона и включил **системное аппаратное затемнение (`FLAG_DIM_BEHIND`)** + режим `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES`. Теперь сам Android плавно и равномерно притемняет абсолютно весь экран целиком, включая статус-бар и навигационную полоску внизу.
+
+
+2. **Красивая широкая стрелочка со скругленными углами:** прошлая галочка была обычным текстовым символом шрифта, поэтому выглядела узкой и топорной. Теперь она рисуется векторным путем (`Canvas` + `Paint.Cap.ROUND` + `Paint.Join.ROUND`) — это настоящая широкая, пухлая шеврон-стрелка с идеально круглыми краями, расположенная по центру сверху карточки (как в шторках iOS).
+
+
+3. **Лишняя кнопка «Готово»:** полностью убрана. Теперь карточка выглядит чище и компактнее, а закрывается либо нажатием на широкую стрелку, либо тапом в любое место мимо карточки (причем закрывается с плавной анимацией уезда вниз, а не резким исчезновением).
+
+
+
+Скопируй обновленный `MainActivity.kt` кнопкой 📋 в углу блока и замени им код на GitHub (`Ctrl + A` ➔ `Backspace` ➔ `Ctrl + V`):
+
+```kotlin
 package com.example.headphoneanim
 
 import android.annotation.SuppressLint
@@ -33,19 +48,64 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
-// Сервисная функция для отрисовки общей белой карточки (и в приложении, и в системном оверлее)
+// Кастомная широкая стрелочка со скругленными углами и краями (в стиле iOS)
+class RoundedChevronButton(context: Context) : View(context) {
+    private val density = context.resources.displayMetrics.density
+
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#F2F2F7")
+        style = Paint.Style.FILL
+    }
+
+    private val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#8E8E93")
+        style = Paint.Style.STROKE
+        strokeWidth = 3.6f * density
+        strokeCap = Paint.Cap.ROUND   // Закругленные кончики линии
+        strokeJoin = Paint.Join.ROUND // Закругленный изгиб посередине
+    }
+
+    private val arrowPath = Path()
+    private val bgRect = RectF()
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat()
+        val h = height.toFloat()
+
+        // Рисуем мягкую капсулу-подложку
+        bgRect.set(0f, 0f, w, h)
+        canvas.drawRoundRect(bgRect, h / 2f, h / 2f, bgPaint)
+
+        // Рисуем широкую стрелочку вниз по центру
+        val cx = w / 2f
+        val cy = h / 2f
+        val halfSpanX = 8.5f * density // Ширина размаха крыльев стрелки
+        val halfSpanY = 3.2f * density // Высота стрелки
+
+        arrowPath.reset()
+        arrowPath.moveTo(cx - halfSpanX, cy - halfSpanY)
+        arrowPath.lineTo(cx, cy + halfSpanY)
+        arrowPath.lineTo(cx + halfSpanX, cy - halfSpanY)
+
+        canvas.drawPath(arrowPath, arrowPaint)
+    }
+}
+
 object PopupCardBuilder {
     fun createPopupView(
         context: Context,
         name: String,
         type: String,
+        useDimBackground: Boolean,
         onClose: () -> Unit
     ): FrameLayout {
         val density = context.resources.displayMetrics.density
+        var isClosing = false
 
         val rootLayout = FrameLayout(context).apply {
-            setBackgroundColor(Color.parseColor("#4D000000"))
-            setOnClickListener { onClose() }
+            // Для системного оверлея затемнение делает сам WindowManager (чтобы не было светлой полосы статус-бара)
+            setBackgroundColor(if (useDimBackground) Color.parseColor("#55000000") else Color.TRANSPARENT)
         }
 
         val cardContainer = LinearLayout(context).apply {
@@ -53,48 +113,50 @@ object PopupCardBuilder {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(
                 (24 * density).toInt(),
-                (16 * density).toInt(),
+                (14 * density).toInt(),
                 (24 * density).toInt(),
                 (24 * density).toInt()
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 34 * density
-                setColor(Color.WHITE) // Чистый белый фон без обводки
+                cornerRadius = 36 * density
+                setColor(Color.WHITE)
             }
             elevation = 24 * density
             isClickable = true
         }
 
-        // Верхняя панель с кнопкой-стрелочкой вниз (в стиле iOS)
-        val topBar = FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+        // Плавная анимация уезда карточки вниз перед удалением
+        val triggerSmoothClose = {
+            if (!isClosing) {
+                isClosing = true
+                AnimatorSet().apply {
+                    playTogether(
+                        ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, cardContainer.translationY, 950f),
+                        ObjectAnimator.ofFloat(cardContainer, View.ALPHA, 1f, 0f)
+                    )
+                    duration = 250
+                    interpolator = DecelerateInterpolator()
+                    start()
+                }
+                cardContainer.postDelayed({ onClose() }, 250)
+            }
         }
 
-        val closeArrowBtn = TextView(context).apply {
-            text = "⌄"
-            textSize = 22f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#8E8E93"))
-            gravity = Gravity.CENTER
-            includeFontPadding = false
-            setPadding(0, 0, 0, (6 * density).toInt())
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#F2F2F7"))
+        rootLayout.setOnClickListener { triggerSmoothClose() }
+
+        // Широкая скругленная кнопка-стрелочка сверху по центру карточки
+        val chevronBtn = RoundedChevronButton(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                (48 * density).toInt(),
+                (28 * density).toInt()
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = (10 * density).toInt()
             }
-            layoutParams = FrameLayout.LayoutParams(
-                (32 * density).toInt(),
-                (32 * density).toInt(),
-                Gravity.END or Gravity.TOP
-            )
-            setOnClickListener { onClose() }
+            setOnClickListener { triggerSmoothClose() }
         }
-        topBar.addView(closeArrowBtn)
-        cardContainer.addView(topBar)
+        cardContainer.addView(chevronBtn)
 
         // Заголовок (Модель наушников)
         val titleText = TextView(context).apply {
@@ -103,7 +165,7 @@ object PopupCardBuilder {
             setTextColor(Color.parseColor("#1C1C1E"))
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setPadding(0, (4 * density).toInt(), 0, (4 * density).toInt())
+            setPadding(0, 0, 0, (4 * density).toInt())
         }
         cardContainer.addView(titleText)
 
@@ -121,32 +183,11 @@ object PopupCardBuilder {
         val animationView = ImageView(context).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        val animSize = (210 * density).toInt()
+        val animSize = (225 * density).toInt()
         val animParams = LinearLayout.LayoutParams(animSize, animSize).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = (12 * density).toInt()
         }
         cardContainer.addView(animationView, animParams)
-
-        // Нижняя кнопка закрытия ("Готово")
-        val doneBtn = Button(context).apply {
-            text = "Готово"
-            textSize = 16f
-            isAllCaps = false
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#007AFF"))
-            stateListAnimator = null
-            background = GradientDrawable().apply {
-                cornerRadius = 16 * density
-                setColor(Color.parseColor("#F2F2F7"))
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (48 * density).toInt()
-            )
-            setOnClickListener { onClose() }
-        }
-        cardContainer.addView(doneBtn)
 
         val cardParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -159,7 +200,7 @@ object PopupCardBuilder {
 
         rootLayout.addView(cardContainer, cardParams)
 
-        // Запуск анимации выезда карточки снизу
+        // Анимация появления карточки снизу
         cardContainer.translationY = 900f
         cardContainer.alpha = 0f
         cardContainer.scaleX = 0.9f
@@ -321,7 +362,8 @@ class MainActivity : Activity() {
         popupView = PopupCardBuilder.createPopupView(
             this,
             "vivo TWS 5i",
-            "Подключено"
+            "Подключено",
+            true
         ) {
             popupView?.let { mainContainer.removeView(it) }
         }
@@ -469,10 +511,8 @@ class HeadphoneService : Service() {
         callback(fallback)
     }
 
-    // Показывает чистый системный оверлей поверх любого экрана БЕЗ открытия самого приложения
     private fun showSystemOverlayPopup(name: String, type: String) {
         if (!Settings.canDrawOverlays(this)) {
-            // Резервный запуск, только если пользователь забыл выдать разрешение "Поверх других окон"
             val popupIntent = Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }
@@ -494,13 +534,19 @@ class HeadphoneService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_DIM_BEHIND, // Аппаратное затемнение всего экрана вместе со статус-баром
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM
+            dimAmount = 0.35f // Степень затемнения фона (35%)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
 
-        val overlayView = PopupCardBuilder.createPopupView(this, name, type) {
+        val overlayView = PopupCardBuilder.createPopupView(this, name, type, false) {
             removeCurrentOverlay()
         }
 
@@ -579,3 +625,5 @@ class HeadphoneService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 }
+
+```
