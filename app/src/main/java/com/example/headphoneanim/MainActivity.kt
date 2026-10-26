@@ -280,4 +280,172 @@ class HeadphoneService : Service() {
                 val isWired = device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                         device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
                 val isUsb = device.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                        device.type == AudioDeviceInfo.TYPE
+                        device.type == AudioDeviceInfo.TYPE_USB_DEVICE
+                val isBluetooth = device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        device.type == 26 || device.type == 27
+
+                if (!isWired && !isUsb && !isBluetooth) continue
+
+                val now = System.currentTimeMillis()
+                if (now - lastTriggerTime < 2500L) return
+                lastTriggerTime = now
+
+                val typeDesc = when {
+                    isWired -> "Проводные наушники (3.5 мм)"
+                    isUsb -> "USB-C аудиоустройство"
+                    else -> "Bluetooth подключен"
+                }
+
+                mainHandler.postDelayed({
+                    findRealHeadphoneName(isWired, isUsb) { realName ->
+                        launchPopup(realName, typeDesc)
+                    }
+                }, 500)
+
+                break
+            }
+        }
+    }
+
+    private fun isSystemBoardName(name: String): Boolean {
+        val trimmed = name.trim()
+        return trimmed.isEmpty() ||
+                trimmed.equals(Build.MODEL, ignoreCase = true) ||
+                trimmed.equals(Build.DEVICE, ignoreCase = true) ||
+                trimmed.equals(Build.PRODUCT, ignoreCase = true) ||
+                trimmed.equals("I2405", ignoreCase = true) ||
+                trimmed.matches(Regex("^[IV]\\d{4}[A-Z]?$", RegexOption.IGNORE_CASE))
+    }
+
+    private fun hasBtPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun findRealHeadphoneName(isWired: Boolean, isUsb: Boolean, callback: (String) -> Unit) {
+        val allOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        for (dev in allOutputs) {
+            val validType = dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    dev.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                    dev.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    dev.type == 26 || dev.type == 27
+            if (validType) {
+                val candidate = dev.productName?.toString()?.trim() ?: ""
+                if (!isSystemBoardName(candidate)) {
+                    callback(candidate)
+                    return
+                }
+            }
+        }
+
+        if (!isWired && !isUsb) {
+            if (!lastConnectedBtName.isNullOrBlank()) {
+                callback(lastConnectedBtName!!)
+                return
+            }
+
+            if (hasBtPermission()) {
+                val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                val adapter = btManager?.adapter
+                if (adapter != null && adapter.isEnabled) {
+                    adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+                        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                            val connected = proxy.connectedDevices
+                            val btName = connected.firstOrNull()?.let { it.alias ?: it.name }
+                            adapter.closeProfileProxy(profile, proxy)
+
+                            if (!btName.isNullOrBlank() && !isSystemBoardName(btName)) {
+                                callback(btName)
+                            } else {
+                                callback("Беспроводные наушники")
+                            }
+                        }
+
+                        override fun onServiceDisconnected(profile: Int) {}
+                    }, BluetoothProfile.A2DP)
+                    return
+                }
+            }
+        }
+
+        val fallback = when {
+            isWired -> "Проводные наушники"
+            isUsb -> "USB-C наушники"
+            else -> "Беспроводные наушники"
+        }
+        callback(fallback)
+    }
+
+    private fun launchPopup(name: String, type: String) {
+        val popupIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra("device_name", name)
+            putExtra("device_type", type)
+            putExtra("auto_triggered", true)
+        }
+        startActivity(popupIntent)
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        startForegroundNotification()
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.registerAudioDeviceCallback(audioCallback, mainHandler)
+
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(btReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(btReceiver, filter)
+        }
+
+        mainHandler.postDelayed({ isReady = true }, 1000)
+    }
+
+    private fun startForegroundNotification() {
+        val channelId = "headphone_monitor_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Мониторинг наушников",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            Notification.Builder(this)
+        }
+            .setContentTitle("Headphone Popup активен")
+            .setContentText("Ожидание подключения наушников...")
+            .setSmallIcon(android.R.drawable.stat_sys_headset)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(1, notification)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        audioManager.unregisterAudioDeviceCallback(audioCallback)
+        try {
+            unregisterReceiver(btReceiver)
+        } catch (_: Exception) {}
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
