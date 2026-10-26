@@ -24,6 +24,7 @@ import android.os.*
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
@@ -32,17 +33,175 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
+// Сервисная функция для отрисовки общей белой карточки (и в приложении, и в системном оверлее)
+object PopupCardBuilder {
+    fun createPopupView(
+        context: Context,
+        name: String,
+        type: String,
+        onClose: () -> Unit
+    ): FrameLayout {
+        val density = context.resources.displayMetrics.density
+
+        val rootLayout = FrameLayout(context).apply {
+            setBackgroundColor(Color.parseColor("#4D000000"))
+            setOnClickListener { onClose() }
+        }
+
+        val cardContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(
+                (24 * density).toInt(),
+                (16 * density).toInt(),
+                (24 * density).toInt(),
+                (24 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 34 * density
+                setColor(Color.WHITE) // Чистый белый фон без обводки
+            }
+            elevation = 24 * density
+            isClickable = true
+        }
+
+        // Верхняя панель с кнопкой-стрелочкой вниз (в стиле iOS)
+        val topBar = FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val closeArrowBtn = TextView(context).apply {
+            text = "⌄"
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#8E8E93"))
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setPadding(0, 0, 0, (6 * density).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#F2F2F7"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                (32 * density).toInt(),
+                (32 * density).toInt(),
+                Gravity.END or Gravity.TOP
+            )
+            setOnClickListener { onClose() }
+        }
+        topBar.addView(closeArrowBtn)
+        cardContainer.addView(topBar)
+
+        // Заголовок (Модель наушников)
+        val titleText = TextView(context).apply {
+            text = name
+            textSize = 22f
+            setTextColor(Color.parseColor("#1C1C1E"))
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(0, (4 * density).toInt(), 0, (4 * density).toInt())
+        }
+        cardContainer.addView(titleText)
+
+        // Подзаголовок
+        val subtitleText = TextView(context).apply {
+            text = type
+            textSize = 14f
+            setTextColor(Color.parseColor("#8E8E93"))
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, (8 * density).toInt())
+        }
+        cardContainer.addView(subtitleText)
+
+        // 3D-анимация WebP
+        val animationView = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        val animSize = (210 * density).toInt()
+        val animParams = LinearLayout.LayoutParams(animSize, animSize).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = (12 * density).toInt()
+        }
+        cardContainer.addView(animationView, animParams)
+
+        // Нижняя кнопка закрытия ("Готово")
+        val doneBtn = Button(context).apply {
+            text = "Готово"
+            textSize = 16f
+            isAllCaps = false
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#007AFF"))
+            stateListAnimator = null
+            background = GradientDrawable().apply {
+                cornerRadius = 16 * density
+                setColor(Color.parseColor("#F2F2F7"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (48 * density).toInt()
+            )
+            setOnClickListener { onClose() }
+        }
+        cardContainer.addView(doneBtn)
+
+        val cardParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM
+        ).apply {
+            val margin = (16 * density).toInt()
+            setMargins(margin, margin, margin, (24 * density).toInt())
+        }
+
+        rootLayout.addView(cardContainer, cardParams)
+
+        // Запуск анимации выезда карточки снизу
+        cardContainer.translationY = 900f
+        cardContainer.alpha = 0f
+        cardContainer.scaleX = 0.9f
+        cardContainer.scaleY = 0.9f
+
+        AnimatorSet().apply {
+            playTogether(
+                ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, 900f, 0f),
+                ObjectAnimator.ofFloat(cardContainer, View.ALPHA, 0f, 1f),
+                ObjectAnimator.ofFloat(cardContainer, View.SCALE_X, 0.9f, 1f),
+                ObjectAnimator.ofFloat(cardContainer, View.SCALE_Y, 0.9f, 1f)
+            )
+            duration = 550
+            interpolator = OvershootInterpolator(1.08f)
+            start()
+        }
+
+        // Запуск WebP
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(context.resources, R.drawable.vivo_popup)
+                val drawable = ImageDecoder.decodeDrawable(source)
+                animationView.setImageDrawable(drawable)
+                if (drawable is AnimatedImageDrawable) {
+                    drawable.repeatCount = 0
+                    drawable.start()
+                }
+            } catch (e: Exception) {
+                animationView.setImageResource(R.drawable.vivo_popup)
+            }
+        } else {
+            animationView.setImageResource(R.drawable.vivo_popup)
+        }
+
+        return rootLayout
+    }
+}
+
 class MainActivity : Activity() {
 
-    private lateinit var cardContainer: LinearLayout
-    private lateinit var animationView: ImageView
-    private lateinit var titleText: TextView
-    private lateinit var subtitleText: TextView
-    private lateinit var testBtn: Button
+    private lateinit var mainContainer: FrameLayout
     private var overlayBtn: Button? = null
-
-    private val handler = Handler(Looper.getMainLooper())
-    private val autoCloseRunnable = Runnable { animateOutAndFinish() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,188 +224,117 @@ class MainActivity : Activity() {
             startService(serviceIntent)
         }
 
-        setupUI()
-        handleIntent(intent)
+        setupSettingsScreen()
     }
 
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        if (intent != null) {
-            setIntent(intent)
-            handleIntent(intent)
-        }
+    override fun onResume() {
+        super.onResume()
+        overlayBtn?.visibility = if (!Settings.canDrawOverlays(this)) View.VISIBLE else View.GONE
     }
 
-    private fun setupUI() {
-        val rootLayout = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#66000000"))
-            setOnClickListener { animateOutAndFinish() }
+    private fun setupSettingsScreen() {
+        val density = resources.displayMetrics.density
+        mainContainer = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#F2F2F7"))
         }
 
-        cardContainer = LinearLayout(this).apply {
+        val settingsBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(60, 60, 60, 60)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 72f
-                setColor(Color.parseColor("#181824"))
-                setStroke(3, Color.parseColor("#3300E5FF"))
-            }
-            isClickable = true
+            gravity = Gravity.CENTER
+            setPadding((24 * density).toInt(), (24 * density).toInt(), (24 * density).toInt(), (24 * density).toInt())
         }
 
-        animationView = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        val animParams = LinearLayout.LayoutParams(480, 480)
-        cardContainer.addView(animationView, animParams)
-
-        titleText = TextView(this).apply {
-            text = "Мониторинг наушников"
-            textSize = 20f
-            setTextColor(Color.WHITE)
+        val statusTitle = TextView(this).apply {
+            text = "Сервис поп-апа активен"
+            textSize = 22f
             typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#1C1C1E"))
             gravity = Gravity.CENTER
-            setPadding(0, 24, 0, 8)
+            setPadding(0, 0, 0, (8 * density).toInt())
         }
-        cardContainer.addView(titleText)
+        settingsBox.addView(statusTitle)
 
-        subtitleText = TextView(this).apply {
-            text = "Сервис готов к работе"
+        val statusSub = TextView(this).apply {
+            text = "Разрешите показ поверх окон, чтобы поп-ап появлялся без открытия приложения"
             textSize = 14f
-            setTextColor(Color.parseColor("#9E9EBA"))
+            setTextColor(Color.parseColor("#8E8E93"))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 36)
+            setPadding(0, 0, 0, (28 * density).toInt())
         }
-        cardContainer.addView(subtitleText)
+        settingsBox.addView(statusSub)
 
         val btnParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = 20 }
+            (52 * density).toInt()
+        ).apply { bottomMargin = (14 * density).toInt() }
 
-        testBtn = Button(this).apply {
-            text = "Тест анимации"
-            setTextColor(Color.BLACK)
+        val testBtn = Button(this).apply {
+            text = "Тест белого поп-апа"
+            textSize = 16f
+            isAllCaps = false
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                cornerRadius = 40f
-                setColor(Color.parseColor("#00E5FF"))
+                cornerRadius = 16 * density
+                setColor(Color.parseColor("#007AFF"))
             }
             setOnClickListener {
-                playConnectAnimation("vivo TWS 5i", "Проверка всплывающего окна", true)
+                showTestPopupInApp()
             }
         }
-        cardContainer.addView(testBtn, btnParams)
+        settingsBox.addView(testBtn, btnParams)
 
-        if (!Settings.canDrawOverlays(this)) {
-            overlayBtn = Button(this).apply {
-                text = "Разрешить показ поверх окон"
-                setTextColor(Color.WHITE)
-                background = GradientDrawable().apply {
-                    cornerRadius = 40f
-                    setColor(Color.parseColor("#2A2A3C"))
-                }
-                setOnClickListener {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                    startActivity(intent)
-                }
+        overlayBtn = Button(this).apply {
+            text = "Разрешить показ поверх окон"
+            textSize = 16f
+            isAllCaps = false
+            setTextColor(Color.parseColor("#1C1C1E"))
+            background = GradientDrawable().apply {
+                cornerRadius = 16 * density
+                setColor(Color.WHITE)
             }
-            cardContainer.addView(overlayBtn, btnParams)
-        }
-
-        val cardParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM
-        ).apply {
-            setMargins(40, 40, 40, 60)
-        }
-
-        rootLayout.addView(cardContainer, cardParams)
-        setContentView(rootLayout)
-    }
-
-    private fun handleIntent(intent: Intent) {
-        val autoTriggered = intent.getBooleanExtra("auto_triggered", false)
-        val deviceName = intent.getStringExtra("device_name") ?: "Наушники"
-        val deviceType = intent.getStringExtra("device_type")
-            ?: if (autoTriggered) "Аудиоустройство активно" else "Фоновый мониторинг активен"
-
-        playConnectAnimation(deviceName, deviceType, autoTriggered)
-    }
-
-    private fun playConnectAnimation(name: String, type: String, autoClose: Boolean) {
-        handler.removeCallbacks(autoCloseRunnable)
-        titleText.text = name
-        subtitleText.text = type
-
-        if (autoClose) {
-            testBtn.visibility = View.GONE
-            overlayBtn?.visibility = View.GONE
-        } else {
-            testBtn.visibility = View.VISIBLE
-            overlayBtn?.visibility = if (!Settings.canDrawOverlays(this)) View.VISIBLE else View.GONE
-        }
-
-        cardContainer.translationY = 900f
-        cardContainer.alpha = 0f
-        cardContainer.scaleX = 0.85f
-        cardContainer.scaleY = 0.85f
-
-        val slideUp = ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, 900f, 0f)
-        val fadeIn = ObjectAnimator.ofFloat(cardContainer, View.ALPHA, 0f, 1f)
-        val scaleX = ObjectAnimator.ofFloat(cardContainer, View.SCALE_X, 0.85f, 1f)
-        val scaleY = ObjectAnimator.ofFloat(cardContainer, View.SCALE_Y, 0.85f, 1f)
-
-        AnimatorSet().apply {
-            playTogether(slideUp, fadeIn, scaleX, scaleY)
-            duration = 650
-            interpolator = OvershootInterpolator(1.15f)
-            start()
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                val source = ImageDecoder.createSource(resources, R.drawable.vivo_popup)
-                val drawable = ImageDecoder.decodeDrawable(source)
-                animationView.setImageDrawable(drawable)
-                if (drawable is AnimatedImageDrawable) {
-                    drawable.repeatCount = 0
-                    drawable.start()
-                }
-            } catch (e: Exception) {
-                animationView.setImageResource(R.drawable.vivo_popup)
+            visibility = if (!Settings.canDrawOverlays(this@MainActivity)) View.VISIBLE else View.GONE
+            setOnClickListener {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
             }
-        } else {
-            animationView.setImageResource(R.drawable.vivo_popup)
         }
+        settingsBox.addView(overlayBtn, btnParams)
 
-        if (autoClose) {
-            handler.postDelayed(autoCloseRunnable, 4000)
-        }
-    }
-
-    private fun animateOutAndFinish() {
-        AnimatorSet().apply {
-            playTogether(
-                ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, 0f, 900f),
-                ObjectAnimator.ofFloat(cardContainer, View.ALPHA, 1f, 0f)
+        mainContainer.addView(
+            settingsBox,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
             )
-            duration = 300
-            interpolator = DecelerateInterpolator()
-            start()
+        )
+
+        setContentView(mainContainer)
+    }
+
+    private fun showTestPopupInApp() {
+        var popupView: View? = null
+        popupView = PopupCardBuilder.createPopupView(
+            this,
+            "vivo TWS 5i",
+            "Подключено"
+        ) {
+            popupView?.let { mainContainer.removeView(it) }
         }
-        handler.postDelayed({ finish() }, 300)
+        mainContainer.addView(popupView)
     }
 }
 
 class HeadphoneService : Service() {
 
     private lateinit var audioManager: AudioManager
+    private lateinit var windowManager: WindowManager
+    private var currentOverlayView: View? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isReady = false
     private var lastTriggerTime = 0L
@@ -292,14 +380,14 @@ class HeadphoneService : Service() {
                 lastTriggerTime = now
 
                 val typeDesc = when {
-                    isWired -> "Проводные наушники (3.5 мм)"
+                    isWired -> "Проводные наушники"
                     isUsb -> "USB-C аудиоустройство"
-                    else -> "Bluetooth подключен"
+                    else -> "Подключено"
                 }
 
                 mainHandler.postDelayed({
                     findRealHeadphoneName(isWired, isUsb) { realName ->
-                        launchPopup(realName, typeDesc)
+                        showSystemOverlayPopup(realName, typeDesc)
                     }
                 }, 500)
 
@@ -381,20 +469,61 @@ class HeadphoneService : Service() {
         callback(fallback)
     }
 
-    private fun launchPopup(name: String, type: String) {
-        val popupIntent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra("device_name", name)
-            putExtra("device_type", type)
-            putExtra("auto_triggered", true)
+    // Показывает чистый системный оверлей поверх любого экрана БЕЗ открытия самого приложения
+    private fun showSystemOverlayPopup(name: String, type: String) {
+        if (!Settings.canDrawOverlays(this)) {
+            // Резервный запуск, только если пользователь забыл выдать разрешение "Поверх других окон"
+            val popupIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            startActivity(popupIntent)
+            return
         }
-        startActivity(popupIntent)
+
+        removeCurrentOverlay()
+
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            layoutType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM
+        }
+
+        val overlayView = PopupCardBuilder.createPopupView(this, name, type) {
+            removeCurrentOverlay()
+        }
+
+        try {
+            windowManager.addView(overlayView, params)
+            currentOverlayView = overlayView
+        } catch (_: Exception) {}
+    }
+
+    private fun removeCurrentOverlay() {
+        currentOverlayView?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+            currentOverlayView = null
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
         startForegroundNotification()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         audioManager.registerAudioDeviceCallback(audioCallback, mainHandler)
 
         val filter = IntentFilter().apply {
@@ -441,6 +570,7 @@ class HeadphoneService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        removeCurrentOverlay()
         audioManager.unregisterAudioDeviceCallback(audioCallback)
         try {
             unregisterReceiver(btReceiver)
