@@ -17,6 +17,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.AnimatedImageDrawable
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -31,12 +32,13 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ImageView
 import kotlin.math.sin
 
 class MainActivity : Activity() {
 
     private lateinit var cardContainer: LinearLayout
-    private lateinit var waveView: HeadphoneAnimationView
+    private lateinit var animationView: ImageView
     private lateinit var titleText: TextView
     private lateinit var subtitleText: TextView
     private lateinit var testBtn: Button
@@ -98,10 +100,11 @@ class MainActivity : Activity() {
             isClickable = true
         }
 
-        waveView = HeadphoneAnimationView(this)
-        val waveParams = LinearLayout.LayoutParams(420, 420)
-        cardContainer.addView(waveView, waveParams)
-
+       animationView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        val animParams = LinearLayout.LayoutParams(420, 420)
+        cardContainer.addView(animationView, animParams)
         titleText = TextView(this).apply {
             text = "Мониторинг наушников"
             textSize = 20f
@@ -209,7 +212,21 @@ class MainActivity : Activity() {
             start()
         }
 
-        waveView.startPulse()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(resources, R.drawable.vivo_popup)
+                val drawable = ImageDecoder.decodeDrawable(source)
+                animationView.setImageDrawable(drawable)
+                if (drawable is AnimatedImageDrawable) {
+                    drawable.repeatCount = 0
+                    drawable.start()
+                }
+            } catch (e: Exception) {
+                animationView.setImageResource(R.drawable.vivo_popup)
+            }
+        } else {
+            animationView.setImageResource(R.drawable.vivo_popup)
+        }
 
         if (autoClose) {
             handler.postDelayed(autoCloseRunnable, 4000)
@@ -230,80 +247,7 @@ class MainActivity : Activity() {
     }
 }
 
-class HeadphoneAnimationView(context: Context) : View(context) {
 
-    private var phase = 0f
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val headbandRect = RectF()
-    private val leftCupRect = RectF()
-    private val rightCupRect = RectF()
-
-    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 2000
-        repeatCount = ValueAnimator.INFINITE
-        interpolator = null
-        addUpdateListener {
-            phase = it.animatedValue as Float
-            invalidate()
-        }
-    }
-
-    fun startPulse() {
-        if (!animator.isStarted) animator.start()
-    }
-
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        animator.cancel()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val cx = width / 2f
-        val cy = height / 2f
-        val maxRadius = width * 0.45f
-
-        for (i in 0..2) {
-            val waveProgress = (phase + i / 3f) % 1f
-            val radius = maxRadius * 0.35f + (maxRadius * 0.65f * waveProgress)
-            val alpha = ((1f - waveProgress) * 160).toInt().coerceIn(0, 255)
-
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 6f * (1f - waveProgress * 0.5f)
-            paint.color = Color.argb(alpha, 0, 229, 255)
-            canvas.drawCircle(cx, cy, radius, paint)
-        }
-
-        paint.style = Paint.Style.FILL
-        paint.color = Color.parseColor("#2200E5FF")
-        canvas.drawCircle(cx, cy, maxRadius * 0.42f, paint)
-
-        val offsetY = sin(phase * Math.PI * 2).toFloat() * 10f
-        canvas.save()
-        canvas.translate(0f, offsetY)
-
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 16f
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.color = Color.WHITE
-        val arcSize = maxRadius * 0.28f
-        headbandRect.set(cx - arcSize, cy - arcSize, cx + arcSize, cy + arcSize)
-        canvas.drawArc(headbandRect, 180f, 180f, false, paint)
-
-        paint.style = Paint.Style.FILL
-        paint.color = Color.parseColor("#00E5FF")
-        val cupW = 26f
-        val cupH = 54f
-        leftCupRect.set(cx - arcSize - cupW / 2, cy - 10f, cx - arcSize + cupW / 2, cy + cupH)
-        rightCupRect.set(cx + arcSize - cupW / 2, cy - 10f, cx + arcSize + cupW / 2, cy + cupH)
-        canvas.drawRoundRect(leftCupRect, 14f, 14f, paint)
-        canvas.drawRoundRect(rightCupRect, 14f, 14f, paint)
-
-        canvas.restore()
-    }
-}
-
-class HeadphoneService : Service() {
 
     private lateinit var audioManager: AudioManager
     private val mainHandler = Handler(Looper.getMainLooper())
