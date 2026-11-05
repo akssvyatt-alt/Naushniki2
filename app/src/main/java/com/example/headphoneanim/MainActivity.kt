@@ -217,7 +217,7 @@ object PopupCardBuilder {
 
         // Запуск WebP и автозакрытие поп-апа сразу после завершения 120-го кадра (закрытия кейса)
         val animDurationMs = 5000L
-        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.P) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 val source = ImageDecoder.createSource(context.resources, R.drawable.vivo_popup)
                 val drawable = ImageDecoder.decodeDrawable(source)
@@ -257,10 +257,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val permissionsToRequest = mutableListOf<String>()
-        if (Build.VERSION_SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33) {
             permissionsToRequest.add("android.permission.POST_NOTIFICATIONS")
         }
-        if (Build.VERSION_SDK_INT >= 31) {
+        if (Build.VERSION.SDK_INT >= 31) {
             permissionsToRequest.add("android.permission.BLUETOOTH_CONNECT")
         }
         if (permissionsToRequest.isNotEmpty()) {
@@ -268,7 +268,7 @@ class MainActivity : Activity() {
         }
 
         val serviceIntent = Intent(this, HeadphoneService::class.java)
-        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
@@ -394,7 +394,7 @@ class HeadphoneService : Service() {
     private val btReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
-            val device: BluetoothDevice? = if (Build.VERSION_SDK_INT >= 33) {
+            val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
                 intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             } else {
                 @Suppress("DEPRECATION")
@@ -458,7 +458,7 @@ class HeadphoneService : Service() {
     }
 
     private fun hasBtPermission(): Boolean {
-        return if (Build.VERSION_SDK_INT >= 31) {
+        return if (Build.VERSION.SDK_INT >= 31) {
             checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED
         } else {
             true
@@ -485,8 +485,9 @@ class HeadphoneService : Service() {
         }
 
         if (!isWired && !isUsb) {
-            if (!lastConnectedBtName.isNullOrBlank()) {
-                callback(lastConnectedBtName!)
+            val cachedBtName = lastConnectedBtName
+            if (!cachedBtName.isNullOrBlank()) {
+                callback(cachedBtName)
                 return
             }
 
@@ -533,7 +534,7 @@ class HeadphoneService : Service() {
 
         removeCurrentOverlay()
 
-        val layoutType = if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
@@ -552,7 +553,7 @@ class HeadphoneService : Service() {
         ).apply {
             gravity = Gravity.BOTTOM
             dimAmount = 0.35f // Степень затемнения фона (35%)
-            if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.P) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
@@ -587,7 +588,7 @@ class HeadphoneService : Service() {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
         }
-        if (Build.VERSION_SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(btReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(btReceiver, filter)
@@ -598,7 +599,7 @@ class HeadphoneService : Service() {
 
     private fun startForegroundNotification() {
         val channelId = "headphone_monitor_channel"
-        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
                 "Мониторинг наушников",
@@ -608,7 +609,7 @@ class HeadphoneService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        val notification = if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
         } else {
             Notification.Builder(this)
@@ -618,7 +619,7 @@ class HeadphoneService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_headset)
             .build()
 
-        if (Build.VERSION_SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= 34) {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(1, notification)
