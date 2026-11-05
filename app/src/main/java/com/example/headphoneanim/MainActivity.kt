@@ -14,7 +14,9 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.*
+import android.graphics.drawable.Animatable2
 import android.graphics.drawable.AnimatedImageDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -46,7 +48,7 @@ class RoundedChevronButton(context: Context) : View(context) {
         color = Color.parseColor("#8E8E93")
         style = Paint.Style.STROKE
         strokeWidth = 3.6f * density
-        strokeCap = Paint.Cap.ROUND   // Закругленные кончики линии
+        strokeCap = Paint.Cap.ROUND  // Закругленные кончики линии
         strokeJoin = Paint.Join.ROUND // Закругленный изгиб посередине
     }
 
@@ -67,7 +69,6 @@ class RoundedChevronButton(context: Context) : View(context) {
         val cy = h / 2f
         val halfSpanX = 8.5f * density // Ширина размаха крыльев стрелки
         val halfSpanY = 3.2f * density // Высота стрелки
-
         arrowPath.reset()
         arrowPath.moveTo(cx - halfSpanX, cy - halfSpanY)
         arrowPath.lineTo(cx, cy + halfSpanY)
@@ -82,42 +83,42 @@ object PopupCardBuilder {
         context: Context,
         name: String,
         type: String,
-        useDimBackground: Boolean,
+        inAppMode: Boolean,
         onClose: () -> Unit
-    ): FrameLayout {
+    ): View {
         val density = context.resources.displayMetrics.density
-        var isClosing = false
 
         val rootLayout = FrameLayout(context).apply {
-            // Для системного оверлея затемнение делает сам WindowManager (чтобы не было светлой полосы статус-бара)
-            setBackgroundColor(if (useDimBackground) Color.parseColor("#55000000") else Color.TRANSPARENT)
+            setBackgroundColor(Color.TRANSPARENT)
         }
 
         val cardContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
             setPadding(
-                (24 * density).toInt(),
-                (14 * density).toInt(),
-                (24 * density).toInt(),
-                (24 * density).toInt()
+                (16 * density).toInt(),
+                (10 * density).toInt(),
+                (16 * density).toInt(),
+                (20 * density).toInt()
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 36 * density
+                cornerRadius = 40f * density
                 setColor(Color.WHITE)
             }
-            elevation = 24 * density
-            isClickable = true
+            elevation = 24f * density
         }
 
-        // Плавная анимация уезда карточки вниз перед удалением
-        val triggerSmoothClose = {
+        var isClosing = false
+
+        // Ссылка на колбэк автозакрытия, чтобы отменить его при ручном закрытии стрелочкой
+        val autoCloseRunnable = Runnable {
             if (!isClosing) {
                 isClosing = true
                 AnimatorSet().apply {
                     playTogether(
-                        ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, cardContainer.translationY, 950f),
+                        ObjectAnimator.ofFloat(cardContainer, View.TRANSLATION_Y, cardContainer.translationY, 950f * density),
                         ObjectAnimator.ofFloat(cardContainer, View.ALPHA, 1f, 0f)
                     )
                     duration = 250
@@ -128,9 +129,15 @@ object PopupCardBuilder {
             }
         }
 
+        // Плавная анимация уезда карточки вниз перед удалением (по стрелке, тапу вне окна или автозакрытию)
+        val triggerSmoothClose = {
+            cardContainer.removeCallbacks(autoCloseRunnable)
+            autoCloseRunnable.run()
+        }
+
         rootLayout.setOnClickListener { triggerSmoothClose() }
 
-        // Широкая скругленная кнопка-стрелочка сверху по центру карточки
+        // Широкая скругленная кнопка-стрелочка сверху по центру карточки (работает в любой момент!)
         val chevronBtn = RoundedChevronButton(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 (48 * density).toInt(),
@@ -164,13 +171,18 @@ object PopupCardBuilder {
         }
         cardContainer.addView(subtitleText)
 
-        // 3D-анимация WebP
+        // 3D-анимация WebP (увеличенный масштаб без пустой дыры сверху)
         val animationView = ImageView(context).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
+            scaleX = 1.42f
+            scaleY = 1.42f
         }
-        val animSize = (225 * density).toInt()
-        val animParams = LinearLayout.LayoutParams(animSize, animSize).apply {
+        val animWidth = LinearLayout.LayoutParams.MATCH_PARENT
+        val animHeight = (275 * density).toInt()
+        val animParams = LinearLayout.LayoutParams(animWidth, animHeight).apply {
             gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = (-20 * density).toInt()    // Подтягивает кейс ближе к надписи "Подключено"
+            bottomMargin = (-8 * density).toInt()
         }
         cardContainer.addView(animationView, animParams)
 
@@ -203,21 +215,33 @@ object PopupCardBuilder {
             start()
         }
 
-        // Запуск WebP
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        // Запуск WebP и автозакрытие поп-апа сразу после завершения 120-го кадра (закрытия кейса)
+        val animDurationMs = 5000L
+        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 val source = ImageDecoder.createSource(context.resources, R.drawable.vivo_popup)
                 val drawable = ImageDecoder.decodeDrawable(source)
                 animationView.setImageDrawable(drawable)
                 if (drawable is AnimatedImageDrawable) {
-                    drawable.repeatCount = 0
+                    drawable.repeatCount = 0 // Проиграть ровно 1 раз до закрытия кейса
+                    drawable.registerAnimationCallback(object : Animatable2.AnimationCallback() {
+                        override fun onAnimationEnd(d: Drawable?) {
+                            triggerSmoothClose()
+                        }
+                    })
                     drawable.start()
+                    // Страховочный таймер на случай, если в WebP зашит бесконечный цикл
+                    cardContainer.postDelayed(autoCloseRunnable, animDurationMs)
+                } else {
+                    cardContainer.postDelayed(autoCloseRunnable, animDurationMs)
                 }
             } catch (e: Exception) {
                 animationView.setImageResource(R.drawable.vivo_popup)
+                cardContainer.postDelayed(autoCloseRunnable, animDurationMs)
             }
         } else {
             animationView.setImageResource(R.drawable.vivo_popup)
+            cardContainer.postDelayed(autoCloseRunnable, animDurationMs)
         }
 
         return rootLayout
@@ -233,10 +257,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val permissionsToRequest = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION_SDK_INT >= 33) {
             permissionsToRequest.add("android.permission.POST_NOTIFICATIONS")
         }
-        if (Build.VERSION.SDK_INT >= 31) {
+        if (Build.VERSION_SDK_INT >= 31) {
             permissionsToRequest.add("android.permission.BLUETOOTH_CONNECT")
         }
         if (permissionsToRequest.isNotEmpty()) {
@@ -244,7 +268,7 @@ class MainActivity : Activity() {
         }
 
         val serviceIntent = Intent(this, HeadphoneService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
@@ -370,7 +394,7 @@ class HeadphoneService : Service() {
     private val btReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
-            val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+            val device: BluetoothDevice? = if (Build.VERSION_SDK_INT >= 33) {
                 intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             } else {
                 @Suppress("DEPRECATION")
@@ -434,7 +458,7 @@ class HeadphoneService : Service() {
     }
 
     private fun hasBtPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= 31) {
+        return if (Build.VERSION_SDK_INT >= 31) {
             checkSelfPermission("android.permission.BLUETOOTH_CONNECT") == PackageManager.PERMISSION_GRANTED
         } else {
             true
@@ -445,7 +469,9 @@ class HeadphoneService : Service() {
     private fun findRealHeadphoneName(isWired: Boolean, isUsb: Boolean, callback: (String) -> Unit) {
         val allOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         for (dev in allOutputs) {
-            val validType = dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            val validType = dev.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    dev.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                     dev.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
                     dev.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
                     dev.type == 26 || dev.type == 27
@@ -460,7 +486,7 @@ class HeadphoneService : Service() {
 
         if (!isWired && !isUsb) {
             if (!lastConnectedBtName.isNullOrBlank()) {
-                callback(lastConnectedBtName!!)
+                callback(lastConnectedBtName!)
                 return
             }
 
@@ -507,7 +533,7 @@ class HeadphoneService : Service() {
 
         removeCurrentOverlay()
 
-        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val layoutType = if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
@@ -526,7 +552,7 @@ class HeadphoneService : Service() {
         ).apply {
             gravity = Gravity.BOTTOM
             dimAmount = 0.35f // Степень затемнения фона (35%)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
@@ -561,7 +587,7 @@ class HeadphoneService : Service() {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
         }
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION_SDK_INT >= 33) {
             registerReceiver(btReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(btReceiver, filter)
@@ -572,7 +598,7 @@ class HeadphoneService : Service() {
 
     private fun startForegroundNotification() {
         val channelId = "headphone_monitor_channel"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
                 "Мониторинг наушников",
@@ -582,7 +608,7 @@ class HeadphoneService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val notification = if (Build.VERSION_SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
         } else {
             Notification.Builder(this)
@@ -592,7 +618,7 @@ class HeadphoneService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_headset)
             .build()
 
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION_SDK_INT >= 34) {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
             startForeground(1, notification)
